@@ -46,7 +46,7 @@ db_collection = db['cern']        # use the "articles" collection of the databas
 BASE_URL = r'https://inspirehep.net/api/literature'
 QUERY = r'cn cms or cn atlas or cn lhcb or cn alice'
 
-SIZE = 500                    # results per api call
+SIZE = 100                    # results per api call
 # SORT = 'mostrecent'         # Most recent records appear first
 SORT = 'mostcited'         # Most cited records appear first
 PAGE = 1                      # Initial page
@@ -106,7 +106,7 @@ def parse_url_params(url:str):
 
     return params
 
-def paginate(response_json:dict):
+def paginate(response_json:dict) -> list:
 
     citation_ids = []
 
@@ -119,7 +119,7 @@ def paginate(response_json:dict):
 
         # save result and get list of document ids
         insert_many_to_db(response_json['hits']['hits'])    # insert articles to db
-        citation_ids.extend([citation['_id'] for citation in response_json['hits']['hits']])    # append article ids to the citation list
+        citation_ids.extend([int(citation['_id']) for citation in response_json['hits']['hits']])    # append article ids to the citation list
 
         logging.debug('next URL {}'.format(next_url))
         logging.debug('\t↓citations: {}/{}'.format(len(citation_ids), num_total_citations))
@@ -128,7 +128,7 @@ def paginate(response_json:dict):
         logging.debug('END, no next URL')
         return citation_ids
 
-def get_citations(citations_url:str):
+def get_citations(citations_url:str) -> list:
 
     logging.debug('getting citations from URL {}'.format(citations_url))
 
@@ -146,29 +146,15 @@ def get_citations(citations_url:str):
 
         # save result and get list of document ids
         insert_many_to_db(response_json['hits']['hits'])    # insert articles to db
-        citation_ids.extend([citation['_id'] for citation in response_json['hits']['hits']])  # append article ids to the citation list
+        citation_ids.extend([int(citation['_id']) for citation in response_json['hits']['hits']])  # append article ids to the citation list
 
         logging.debug('\tcitations: {}/{}'.format(len(citation_ids), num_total_citations))
         
         # If there's a next page, get it, parse it and append to db.
-        while 'next' in response_json['links'].keys():
-
-            # parse and update params for next query using the "next" URL provided by the API
-            next_url = response_json['links']['next']
-            params = parse_url_params(next_url)
-            response_json = api_call(params)    # API call
-
-            # save result and get list of document ids
-            insert_many_to_db(response_json['hits']['hits'])    # insert articles to db
-            citation_ids.extend([citation['_id'] for citation in response_json['hits']['hits']])    # append article ids to the citation list
-
-            logging.debug('next URL {}'.format(next_url))
-            logging.debug('\t↓citations: {}/{}'.format(len(citation_ids), num_total_citations))
-
-        else:
-            logging.debug('END, no next URL')
-
-        logging.debug('Citations {}/{}, ids: {}'.format{len(citation_ids),num_total_citations,citation_ids})
+        if 'next' in response_json['links'].keys():
+            citation_ids.extend(paginate(response_json))
+            
+        logging.debug('Citations {}/{}, ids: {}'.format(len(citation_ids),num_total_citations,citation_ids))
 
         # return the list of the ids of the citations
         return citation_ids 
@@ -183,27 +169,16 @@ def get_citations(citations_url:str):
 
             # save result and get list of document ids
             insert_many_to_db(response_json['hits']['hits'])    # insert articles to db
-            citation_ids.extend([citation['_id'] for citation in response_json['hits']['hits']])  # append article ids to the citation list
+            citation_ids.extend([int(citation['_id']) for citation in response_json['hits']['hits']])  # append article ids to the citation list
 
             logging.debug('\tcitations: {}/{}'.format(len(citation_ids), num_total_citations))
             
             # If there's a next page, get it, parse it and append to db.
-            while 'next' in response_json['links'].keys():
+            if 'next' in response_json['links'].keys():
+                citation_ids.extend(paginate(response_json))
 
-                # parse and update params for next query using the "next" URL provided by the API
-                next_url = response_json['links']['next']
-                params = parse_url_params(next_url)
-                response_json = api_call(params)    # API call
-
-                # save result and get list of document ids
-                insert_many_to_db(response_json['hits']['hits'])    # insert articles to db
-                citation_ids.extend([citation['_id'] for citation in response_json['hits']['hits']])    # append article ids to the citation list
-
-                logging.debug('next URL {}'.format(next_url))
-                logging.debug('\t↓citations: {}/{}'.format(len(citation_ids), num_total_citations))
-
-            else:
-                logging.debug('END, no next URL')
+        # return the list of the ids of the citations
+        return citation_ids 
 
     else:
         logging.debug('\tno citations')
