@@ -51,7 +51,7 @@ SIZE = 100                    # results per api call
 SORT = 'mostcited'         # Most cited records appear first
 PAGE = 1                      # Initial page
 FIELDS = 'titles,authors.full_name,authors.affiliations,authors.bai,publication_info,document_type,inspire_categories,references,citation_count,citation_count_without_self_citations'
-
+FORMAT = 'json'
 
 def api_call(params:dict):
 
@@ -85,6 +85,7 @@ def api_call(params:dict):
         sys.exit()
     
     else:   # Success on API call
+        response.encoding = 'UTF-8'
         json_text = response.text
         # remove $ from keys to avoid conflicts with database
         json_text = json_text.replace(r'$ref','ref')      
@@ -122,6 +123,7 @@ def paginate(response_json:dict) -> list:
         citation_ids.extend([int(citation['_id']) for citation in response_json['hits']['hits']])    # append article ids to the citation list
 
         logging.debug('next URL {}'.format(next_url))
+        num_total_citations = response_json['hits']['total']
         logging.debug('\t↓citations: {}/{}'.format(len(citation_ids), num_total_citations))
 
     else:
