@@ -1,0 +1,6 @@
+env
+network
+arc
+data.json
+data.gexf
+*.log
