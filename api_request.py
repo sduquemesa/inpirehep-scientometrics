@@ -50,7 +50,7 @@ SIZE = 500                    # results per api call
 # SORT = 'mostrecent'         # Most recent records appear first
 SORT = 'mostcited'         # Most cited records appear first
 PAGE = 1                      # Initial page
-FIELDS = 'titles,authors.full_name,authors.affiliations,authors.bai,publication_info,document_type,inspire_categories,references,citation_count'
+FIELDS = 'titles,authors.full_name,authors.affiliations,authors.bai,publication_info,document_type,inspire_categories,references,citation_count,citation_count_without_self_citations'
 
 
 def api_call(params:dict):
@@ -96,62 +96,118 @@ def api_call(params:dict):
         return json.loads(json_text)
 
 
-
-def get_citations(citations_url:str):
-
-
-    logging.debug('getting citations from URL {}'.format(citations_url))
-    citation_docs = []
-    # parse initial params for citations query using the URL provided by the API
-    parsed_citations_url = urlparse.urlparse(citations_url)
-    params = parse_qs(parsed_citations_url.query)
+def parse_url_params(url:str):
+    parsed_url = urlparse.urlparse(url)
+    params = parse_qs(parsed_url.query)
 
     # modify params to only include required fields and set response size
     params['size'] = SIZE
     params['fields'] = FIELDS
 
-    while True:
+    return params
 
-        response_json = api_call(params)
-        num_total_citations = response_json['hits']['total']
+def paginate(response_json:dict):
 
-        # Currently the API limits the number of results to 10K.
-        # If results are less than 10k, proceed with regular pagination 
-        if (num_total_citations != 0 and num_total_citations <= 10e3):
-            citation_docs.extend(response_json['hits']['hits'])        # append results to the citation list
-            logging.debug('\tcitations: {}/{}'.format(len(citation_docs), num_total_citations))
-            
-            # If there's a next page, get and parse it. Else, save docs to db and return (break from while)
-            if 'next' in response_json['links'].keys():
-                # parse and update params for next query using the "next" URL provided by the API
-                next_url = response_json['links']['next']
-                logging.debug('next URL {}'.format(next_url))
-                next_url_parsed = urlparse.urlparse(next_url)
-                params = parse_qs(next_url_parsed.query)
-                # modify params to only include required fields and set response size
-                params['size'] = SIZE
-                params['fields'] = FIELDS
-                continue
-            else:
-                logging.debug('\t↓citations: {}/{}'.format(len(citation_docs), num_total_citations))
-                logging.debug('END, no next URL')
-                
-                # append results to db
-                insert_many_to_db(citation_docs)
+    citation_ids = []
 
-                # get ids of citations
-                citation_ids = [citation['_id'] for citation in citation_docs]
+    while 'next' in response_json['links'].keys():
 
-                return citation_ids  
+        # parse and update params for next query using the "next" URL provided by the API
+        next_url = response_json['links']['next']
+        params = parse_url_params(next_url)
+        response_json = api_call(params)    # API call
+
+        # save result and get list of document ids
+        insert_many_to_db(response_json['hits']['hits'])    # insert articles to db
+        citation_ids.extend([citation['_id'] for citation in response_json['hits']['hits']])    # append article ids to the citation list
+
+        logging.debug('next URL {}'.format(next_url))
+        logging.debug('\t↓citations: {}/{}'.format(len(citation_ids), num_total_citations))
+
+    else:
+        logging.debug('END, no next URL')
+        return citation_ids
+
+def get_citations(citations_url:str):
+
+    logging.debug('getting citations from URL {}'.format(citations_url))
+
+    citation_ids = []   # list for ids of citations
+    
+    # parse initial params for citations query using the URL provided by the API
+    params = parse_url_params(citations_url)
+    response_json = api_call(params)
+
+    num_total_citations = response_json['hits']['total']
+
+    # Currently the API limits the number of results to 10K.
+    # If results are less than 10k, proceed with regular pagination 
+    if (num_total_citations != 0 and num_total_citations <= 10e3):
+
+        # save result and get list of document ids
+        insert_many_to_db(response_json['hits']['hits'])    # insert articles to db
+        citation_ids.extend([citation['_id'] for citation in response_json['hits']['hits']])  # append article ids to the citation list
+
+        logging.debug('\tcitations: {}/{}'.format(len(citation_ids), num_total_citations))
         
-        # If results are more than 10k, split request into several queries with less than 10k results
-        elif num_total_citations > 10e3:
+        # If there's a next page, get it, parse it and append to db.
+        while 'next' in response_json['links'].keys():
 
-            pass
+            # parse and update params for next query using the "next" URL provided by the API
+            next_url = response_json['links']['next']
+            params = parse_url_params(next_url)
+            response_json = api_call(params)    # API call
+
+            # save result and get list of document ids
+            insert_many_to_db(response_json['hits']['hits'])    # insert articles to db
+            citation_ids.extend([citation['_id'] for citation in response_json['hits']['hits']])    # append article ids to the citation list
+
+            logging.debug('next URL {}'.format(next_url))
+            logging.debug('\t↓citations: {}/{}'.format(len(citation_ids), num_total_citations))
 
         else:
-            logging.debug('\tno citations')
-            return []   
+            logging.debug('END, no next URL')
+
+        logging.debug('Citations {}/{}, ids: {}'.format{len(citation_ids),num_total_citations,citation_ids})
+
+        # return the list of the ids of the citations
+        return citation_ids 
+        
+    # If results are more than 10k, split request into several queries with less than 10k results
+    elif num_total_citations > 10e3:
+
+        for date_range in ['2000--2015', '2016--2021']:
+
+            params['earliest_date'] = date_range
+            response_json = api_call(params)
+
+            # save result and get list of document ids
+            insert_many_to_db(response_json['hits']['hits'])    # insert articles to db
+            citation_ids.extend([citation['_id'] for citation in response_json['hits']['hits']])  # append article ids to the citation list
+
+            logging.debug('\tcitations: {}/{}'.format(len(citation_ids), num_total_citations))
+            
+            # If there's a next page, get it, parse it and append to db.
+            while 'next' in response_json['links'].keys():
+
+                # parse and update params for next query using the "next" URL provided by the API
+                next_url = response_json['links']['next']
+                params = parse_url_params(next_url)
+                response_json = api_call(params)    # API call
+
+                # save result and get list of document ids
+                insert_many_to_db(response_json['hits']['hits'])    # insert articles to db
+                citation_ids.extend([citation['_id'] for citation in response_json['hits']['hits']])    # append article ids to the citation list
+
+                logging.debug('next URL {}'.format(next_url))
+                logging.debug('\t↓citations: {}/{}'.format(len(citation_ids), num_total_citations))
+
+            else:
+                logging.debug('END, no next URL')
+
+    else:
+        logging.debug('\tno citations')
+        return []   
 
 
 
