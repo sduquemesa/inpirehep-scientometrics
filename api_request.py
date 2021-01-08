@@ -85,7 +85,8 @@ def api_call(params:dict):
         sys.exit()
     
     else:   # Success on API call
-        # response.encoding = 'UTF-8'
+        response.encoding = 'UTF-8'
+        logging.debug('response encoding {}'.format(response.encoding))
         json_text = response.text
         # remove $ from keys to avoid conflicts with database
         json_text = json_text.replace(r'$ref','ref')      
