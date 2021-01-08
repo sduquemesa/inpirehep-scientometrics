@@ -4,3 +4,4 @@ arc
 data.json
 data.gexf
 *.log
+.vscode
