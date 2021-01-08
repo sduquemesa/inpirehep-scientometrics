@@ -85,7 +85,7 @@ def api_call(params:dict):
         sys.exit()
     
     else:   # Success on API call
-        response.encoding = 'UTF-8'
+        # response.encoding = 'UTF-8'
         json_text = response.text
         # remove $ from keys to avoid conflicts with database
         json_text = json_text.replace(r'$ref','ref')      
@@ -115,6 +115,7 @@ def paginate(response_json:dict) -> list:
 
         # parse and update params for next query using the "next" URL provided by the API
         next_url = response_json['links']['next']
+        logging.debug('next URL {}'.format(next_url))
         params = parse_url_params(next_url)
         response_json = api_call(params)    # API call
 
@@ -122,9 +123,8 @@ def paginate(response_json:dict) -> list:
         insert_many_to_db(response_json['hits']['hits'])    # insert articles to db
         citation_ids.extend([int(citation['_id']) for citation in response_json['hits']['hits']])    # append article ids to the citation list
 
-        logging.debug('next URL {}'.format(next_url))
         num_total_citations = response_json['hits']['total']
-        logging.debug('\t↓citations: {}/{}'.format(len(citation_ids), num_total_citations))
+        logging.debug('\t↓citations: {}/{}'.format(len(citation_ids)+SIZE, num_total_citations))
 
     else:
         logging.debug('END, no next URL')
@@ -179,6 +179,8 @@ def get_citations(citations_url:str) -> list:
             if 'next' in response_json['links'].keys():
                 citation_ids.extend(paginate(response_json))
 
+        logging.debug('Citations {}/{}, ids: {}'.format(len(citation_ids),num_total_citations,citation_ids))
+        
         # return the list of the ids of the citations
         return citation_ids 
 
