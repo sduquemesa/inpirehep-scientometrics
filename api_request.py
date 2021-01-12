@@ -28,7 +28,7 @@ import time
 
 # logging library
 import logging
-logging.basicConfig(filename='app.log', level=logging.DEBUG, format='%(funcName)s-\t\t\t\t%(message)s')
+logging.basicConfig(filename='app.log', level=logging.DEBUG, format='%(asctime)s-%(funcName)s-\t\t\t\t%(message)s', datefmt="%Y-%m-%d %H:%M:%S")
 
 
 # MongoDB database library
@@ -47,11 +47,14 @@ BASE_URL = r'https://inspirehep.net/api/literature'
 QUERY = r'cn cms or cn atlas or cn lhcb or cn alice'
 
 SIZE = 100                    # results per api call
-# SORT = 'mostrecent'         # Most recent records appear first
-SORT = 'mostcited'         # Most cited records appear first
+SORT = 'mostrecent'         # Most recent records appear first
+# SORT = 'mostcited'         # Most cited records appear first
 PAGE = 1                      # Initial page
 FIELDS = 'titles,authors.full_name,authors.affiliations,authors.bai,publication_info,document_type,inspire_categories,references,citation_count,citation_count_without_self_citations'
 FORMAT = 'json'
+# EARLIEST_DATE = '2000--2014'
+EARLIEST_DATE = '2015--2021'
+
 
 def api_call(params:dict):
 
@@ -105,6 +108,7 @@ def parse_url_params(url:str):
     # modify params to only include required fields and set response size
     params['size'] = SIZE
     params['fields'] = FIELDS
+    params['earliest_date'] = EARLIEST_DATE
 
     return params
 
@@ -235,7 +239,8 @@ if __name__ == '__main__':
         'sort': SORT,    
         'size': SIZE, 
         'page': PAGE,           # start from first page
-        'fields': FIELDS
+        'fields': FIELDS,
+        'earliest_date': EARLIEST_DATE
     }
 
     while True:
