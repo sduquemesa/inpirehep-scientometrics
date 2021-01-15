@@ -50,7 +50,7 @@ SIZE = 100                    # results per api call
 SORT = 'mostrecent'         # Most recent records appear first
 # SORT = 'mostcited'         # Most cited records appear first
 PAGE = 1                      # Initial page
-FIELDS = 'titles,authors.full_name,authors.affiliations,authors.bai,publication_info,document_type,inspire_categories,references,citation_count,citation_count_without_self_citations'
+FIELDS = 'titles,authors.full_name,authors.affiliations,authors.bai,referenced_authors_bais,author_count,publication_info,document_type,inspire_categories,references,citation_count,citation_count_without_self_citations,collaborations,arxiv_eprints,preprint_date'
 FORMAT = 'json'
 # EARLIEST_DATE = '2000--2014'
 EARLIEST_DATE = '2015--2021'
@@ -89,7 +89,7 @@ def api_call(params:dict):
     
     else:   # Success on API call
         response.encoding = 'UTF-8'
-        logging.debug('response encoding {}'.format(response.encoding))
+        # logging.debug('response encoding {}'.format(response.encoding))
         json_text = response.text
         # remove $ from keys to avoid conflicts with database
         json_text = json_text.replace(r'$ref','ref')      
@@ -105,10 +105,9 @@ def parse_url_params(url:str):
     parsed_url = urlparse.urlparse(url)
     params = parse_qs(parsed_url.query)
 
-    # modify params to only include required fields and set response size
+    # modify params to include required fields and set response size
     params['size'] = SIZE
     params['fields'] = FIELDS
-    params['earliest_date'] = EARLIEST_DATE
 
     return params
 
@@ -168,6 +167,8 @@ def get_citations(citations_url:str) -> list:
         
     # If results are more than 10k, split request into several queries with less than 10k results
     elif num_total_citations > 10e3:
+
+        logging.debug('API LIMIT: citation number is greater than 10e3, splitting query by time buckets')
 
         for date_range in ['2000--2015', '2016--2021']:
 
