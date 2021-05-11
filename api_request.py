@@ -4,14 +4,11 @@
 """Download and store on MongoDB documents from INSPIREHEP API
 
     author = Sebastian Duque Mesa
-    credits = Sebastian Duque Mesa, Diego A. Restrepo, Jose David Ruiz
     maintainer = Sebastian Duque Mesa
     email = sebastian.duquem [at] udea.edu.co
 
     INSPIREHEP API doc at https://github.com/inspirehep/rest-api-doc
 """
-
-
 
 # Import library for HTTP requests
 import requests
@@ -28,35 +25,50 @@ import time
 
 # logging library
 import logging
-logging.basicConfig(filename='app.log', level=logging.DEBUG, format='%(asctime)s-%(funcName)s-\t\t\t\t%(message)s', datefmt="%Y-%m-%d %H:%M:%S")
+handler = logging.StreamHandler(sys.stdout)
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s-%(funcName)s:\t%(message)s', datefmt="%Y-%m-%d %H:%M:%S", handlers=[handler])
 
 
 # MongoDB database library
 import pymongo
 from pymongo import MongoClient
-logging.info('connecting to database')
-# db_client = MongoClient('localhost', 27017)
-db_client = MongoClient('172.19.31.5', 27017)
-db = db_client['inspirehep']
-db_collection = db['cern']        # use the "articles" collection of the database
 
 
 ### PARAMETERS ###
 
 BASE_URL = r'https://inspirehep.net/api/literature'
+# QUERY = r'unal'
 QUERY = r'cn cms or cn atlas or cn lhcb or cn alice'
 
-SIZE = 100                    # results per api call
+SIZE = 10                    # results per api call
 SORT = 'mostrecent'         # Most recent records appear first
 # SORT = 'mostcited'         # Most cited records appear first
 PAGE = 1                      # Initial page
-FIELDS = 'titles,authors.full_name,authors.affiliations,authors.bai,referenced_authors_bais,author_count,publication_info,document_type,inspire_categories,references,citation_count,citation_count_without_self_citations,collaborations,arxiv_eprints,preprint_date'
+FIELDS = 'titles,'\
+            'authors.full_name,'\
+            'authors.affiliations,'\
+            'authors.bai,'\
+            'referenced_authors_bais,'\
+            'author_count,'\
+            'publication_info,'\
+            'document_type,'\
+            'inspire_categories,'\
+            'references,'\
+            'citation_count,'\
+            'citation_count_without_self_citations,'\
+            'collaborations,'\
+            'arxiv_eprints,'\
+            'preprint_date,'\
+            'citeable,'\
+            'abstracts'
 FORMAT = 'json'
-# EARLIEST_DATE = '2000--2014'
-EARLIEST_DATE = '2015--2021'
+EARLIEST_DATE = '1990--2021'
+
+NUM_HITS_API_LIMIT = 10000
+SIZE_API_LIMIT = 1000
 
 
-def api_call(params:dict):
+def call_api(params:dict) -> dict:
 
     logging.info('making API call with params {}'.format(params))
     try:
@@ -64,142 +76,58 @@ def api_call(params:dict):
             BASE_URL,
             params = params
             )
-
         # If the response was successful, no Exception will be raised
         response.raise_for_status()
-
         logging.info('response time {}'.format(response.elapsed.total_seconds()))
-
     except HTTPError as http_err:
         logging.exception("HTTP exception occurred")
-        if response.status_code == 429:             # when hit the rate limit
+        if response.status_code == 400:
+            logging.debug('Exceeded maximum number of results per page ({})'.format(SIZE_API_LIMIT))
+        elif response.status_code == 429:           # when rate limited
             timeout = response.headers['x-retry-in']
             logging.debug('rate limited, sleeping for {:f.2}s'.format(timeout))
             time.sleep(timeout)
-            return api_call(params)                 # try again recursevely
-        if response.status_code == 504:             # when server error
-            return api_call(params)                 # try again recursevely
+            return call_api(params)                 # try again recursevely
+        elif response.status_code == 504:           # when server error
+            time.sleep(1)
+            return call_api(params)                 # try again recursevely
         else:                                       # another HTTP error
+            logging.debug('Unknown {} HTTP error: {}'.format(response.status_code, response))
+            print('Unknown {} HTTP error: {}'.format(response.status_code, response))
             sys.exit()
-
     except Exception as err:
         logging.exception("non-HTTP exception occurred")
         logging.exception(err)
+        print("non-HTTP exception occurred:\n {}".format(err))
         sys.exit()
-    
     else:   # Success on API call
         response.encoding = 'UTF-8'
-        # logging.debug('response encoding {}'.format(response.encoding))
         json_text = response.text
         # remove $ from keys to avoid conflicts with database
-        json_text = json_text.replace(r'$ref','ref')      
-        json_text = json_text.replace(r'$schema','schema')
-        # replace "id" label to "_id" to use as database id
-        json_text = json_text.replace(r'"id"','"_id"')
+        json_text = json_text.replace(r'"$ref"','"ref"')
+        json_text = json_text.replace(r'"$schema"','"schema"')
         logging.debug('data succesfully obtained and parsed')
-
         return json.loads(json_text)
 
 
-def parse_url_params(url:str):
+def parse_url_params(url:str) -> dict:
+    '''parse params from an URL string and return as dictionary'''
     parsed_url = urlparse.urlparse(url)
     params = parse_qs(parsed_url.query)
-
-    # modify params to include required fields and set response size
-    params['size'] = SIZE
-    params['fields'] = FIELDS
-
     return params
 
-def paginate(response_json:dict) -> list:
 
-    citation_ids = []
-
-    while 'next' in response_json['links'].keys():
-
-        # parse and update params for next query using the "next" URL provided by the API
-        next_url = response_json['links']['next']
-        logging.debug('next URL {}'.format(next_url))
-        params = parse_url_params(next_url)
-        response_json = api_call(params)    # API call
-
-        # save result and get list of document ids
-        insert_many_to_db(response_json['hits']['hits'])    # insert articles to db
-        citation_ids.extend([int(citation['_id']) for citation in response_json['hits']['hits']])    # append article ids to the citation list
-
-        num_total_citations = response_json['hits']['total']
-        logging.debug('\t↓citations: {}/{}'.format(len(citation_ids)+SIZE, num_total_citations))
-
-    else:
-        logging.debug('END, no next URL')
-        return citation_ids
-
-def get_citations(citations_url:str) -> list:
-
-    logging.debug('getting citations from URL {}'.format(citations_url))
-
-    citation_ids = []   # list for ids of citations
-    
-    # parse initial params for citations query using the URL provided by the API
-    params = parse_url_params(citations_url)
-    response_json = api_call(params)
-
-    num_total_citations = response_json['hits']['total']
-
-    # Currently the API limits the number of results to 10K.
-    # If results are less than 10k, proceed with regular pagination 
-    if (num_total_citations != 0 and num_total_citations <= 10e3):
-
-        # save result and get list of document ids
-        insert_many_to_db(response_json['hits']['hits'])    # insert articles to db
-        citation_ids.extend([int(citation['_id']) for citation in response_json['hits']['hits']])  # append article ids to the citation list
-
-        logging.debug('\tcitations: {}/{}'.format(len(citation_ids), num_total_citations))
-        
-        # If there's a next page, get it, parse it and append to db.
-        if 'next' in response_json['links'].keys():
-            citation_ids.extend(paginate(response_json))
-            
-        logging.debug('Citations {}/{}, ids: {}'.format(len(citation_ids),num_total_citations,citation_ids))
-
-        # return the list of the ids of the citations
-        return citation_ids 
-        
-    # If results are more than 10k, split request into several queries with less than 10k results
-    elif num_total_citations > 10e3:
-
-        logging.debug('API LIMIT: citation number is greater than 10e3, splitting query by time buckets')
-
-        for date_range in ['2000--2015', '2016--2021']:
-
-            params['earliest_date'] = date_range
-            response_json = api_call(params)
-
-            # save result and get list of document ids
-            insert_many_to_db(response_json['hits']['hits'])    # insert articles to db
-            citation_ids.extend([int(citation['_id']) for citation in response_json['hits']['hits']])  # append article ids to the citation list
-
-            logging.debug('\tcitations: {}/{}'.format(len(citation_ids), num_total_citations))
-            
-            # If there's a next page, get it, parse it and append to db.
-            if 'next' in response_json['links'].keys():
-                citation_ids.extend(paginate(response_json))
-
-        logging.debug('Citations {}/{}, ids: {}'.format(len(citation_ids),num_total_citations,citation_ids))
-        
-        # return the list of the ids of the citations
-        return citation_ids 
-
-    else:
-        logging.debug('\tno citations')
-        return []   
-
+def interval_split(interval:list) -> list:
+    w = (interval[1] - interval[0]) // 2
+    interval_list = [[interval[0], interval[0]+w],[interval[0]+w+1,interval[1]]]
+    logging.info('splitting interval {} into {}'.format(interval, interval_list))
+    return interval_list
 
 
 def insert_one_to_db(doc:dict):
+    ''' insert a single document to DB and skip if it is already in collection.'''
 
-    # insert a single document to DB if is not already in collection.
-    logging.debug('inserting document id:{}'.format(doc['_id']))
+    logging.debug('inserting article with id:{}'.format(doc['id']))
     try:
         # insert document to database using doc id as database id
         db_result = db_collection.insert_one(doc)
@@ -213,62 +141,116 @@ def insert_one_to_db(doc:dict):
         sys.exit()
 
 
-def insert_many_to_db(docs:list):
+def insert_many_to_db(docs:list, db_collection:pymongo.database.Database):
+    ''' inserts many documents to DB and skip those already in collection.'''
 
-    logging.debug('inserting {} documents to db'.format(len(docs)))
+    logging.debug('trying to insert {} documents to db'.format(len(docs)))
     try:
         db_collection.insert_many(docs, ordered = False)
     except pymongo.errors.BulkWriteError as bwe:
         for error in bwe.details['writeErrors']:
             if error['code'] == 11000:
-                logging.debug('Document {} already in collection'.format(error['op']['_id']))
+                logging.debug('Document {} already in collection'.format(error['op']['id']))
             else:
                 logging.exception("unknown error while inserting to db, error code {}".format(error['code']))
                 sys.exit()
-        logging.debug('Inserted {} documents to db'.format(bwe.details['nInserted']))
+        logging.debug('inserted {} documents to db'.format(bwe.details['nInserted']))
 
+
+def paginate_and_save(query_params:dict, db_collection:pymongo.database.Database):
+
+    inserted_ids = []
+
+    logging.info('downloading page {}'.format(query_params['page']))
+    response_json = call_api(query_params)
+    documents = response_json['hits']['hits']
+    if len(documents) > 0:
+        insert_many_to_db(documents, db_collection)    # insert articles from response to DB
+        inserted_ids.extend([document['id'] for document in documents])
+
+    # if next page: parse next_url params and call recursively
+    if 'next' in response_json['links'].keys():
+        query_params = parse_url_params(response_json['links']['next'])
+        downloaded_ids = paginate_and_save(query_params, db_collection)
+        inserted_ids.extend(downloaded_ids)
+        return inserted_ids
+    else:
+        return inserted_ids
+
+def get_num_hits(query_params:dict) -> int:
+
+    response_json = call_api({
+        'q': query_params['q'],
+        'sort': query_params['sort'],
+        'size': 1,
+        'page': 1,
+        'fields': 'id',
+        'earliest_date': query_params['earliest_date']
+    })
+    hits = response_json['hits']['total']
+    logging.info('number of hits {}'.format(hits))
+
+    return hits
+
+def download_docs(query_params:dict, db_collection:pymongo.database.Database) -> list:
+    '''Get documents from API and store on DB.
+    Split by date is also handled by this function.
+    '''
+
+    ids_downloaded = []
+
+    # This first api call will check the number of hits
+    # if it is greater then 10k documents then the query needs
+    # to be splitted till we get under the API limit.
+    # The strategy here is to split the query by year buckets.
+    hits = get_num_hits(query_params)
+
+    if hits == 0: return ids_downloaded
+
+    if hits < NUM_HITS_API_LIMIT:
+        downloaded_docs_id_list = paginate_and_save(query_params,db_collection)
+        ids_downloaded.extend(downloaded_docs_id_list)
+    else:
+        logging.info('number of hits ABOVE the API limit, splitting into time buckets')
+        # split by date and download
+        dates = list(map(int, query_params['earliest_date'].split('--')))
+        splitted_date_range = interval_split(dates)
+        for date_range in splitted_date_range:
+            query_params['earliest_date'] = "{}--{}".format(date_range[0],date_range[1])
+            logging.info('downloading docs in date-range {}'.format(date_range))
+            downloaded_docs_id_list = download_docs(query_params, db_collection)
+            ids_downloaded.extend(downloaded_docs_id_list)
+
+    return ids_downloaded
 
 
 if __name__ == '__main__':
 
+    logging.info('connecting to database')
+    db_client = MongoClient('localhost', 27017)
+    # db_client = MongoClient('172.19.31.5', 27017)
+    db = db_client['inspirehep']    # select "inspirehep" database
+    db_collection = db['lhc']          # use the "lhc" collection of the database
+
+    # create index on id to ensure no duplicated entries
+    db_collection.create_index([('id', pymongo.ASCENDING)], unique=True)
+
     logging.info('starting collection')
 
-    # initial params
-    num_docs = 0
-    params = {
-        'q': QUERY,         # URL-encoded query
-        'sort': SORT,    
-        'size': SIZE, 
-        'page': PAGE,           # start from first page
+    query_params = {
+        'q': QUERY,
+        'sort': SORT,
+        'size': SIZE,
+        'page': PAGE,
         'fields': FIELDS,
         'earliest_date': EARLIEST_DATE
     }
 
-    while True:
+    ids_downloaded = download_docs(query_params, db_collection)
+    print(len(ids_downloaded))
 
-        response_json = api_call(params)
-        num_total_docs = response_json['hits']['total'] # number of results or "hits" of the query
+    # add field to indicate this documents belongs to the main query
+    db_collection.update_many({},{"$set":{"is_parent_document":True}}, upsert=False)
 
-        # Parse documents
-        for doc in response_json['hits']['hits']:       # go over every single-document result
-            logging.debug( 'doc id {}\t\t {}/{}'.format(doc['_id'], num_docs, num_total_docs) )
-
-            # get all document citations and insert to db
-            citations_url = doc['links']['citations']
-            citations_ids = get_citations(citations_url)
-
-            doc['citations_ids'] = citations_ids        # append citations ids to document
-            insert_one_to_db(doc)                       # insert document to db
-
-            num_docs += 1
-
-        if 'next' in response_json['links'].keys():
-            # parse and update params for next query using the "next" URL provided by the API
-            next_url = response_json['links']['next']
-            logging.debug('next URL {}'.format(next_url))
-            next_url_parsed = urlparse.urlparse(next_url)
-            params = parse_qs(next_url_parsed.query)
-        else:
-            # end of documents
-            logging.info('END')
-            break
+    # remove documents from unwanted collaboration "Herschel Atlas"
+    documents = db_collection.delete_many({'metadata.collaborations.value': "Herschel ATLAS"})
